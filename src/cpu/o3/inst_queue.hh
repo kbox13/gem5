@@ -336,6 +336,17 @@ class InstructionQueue
      */
     std::list<DynInstPtr> retryMemInsts;
 
+    /** List of instructions in the WIB
+     * using a graph to make common case fast of removing an inst from the wib
+     * still need to be able to grab a inst off the front/grab the oldest
+     * then use a list to keep track of adding order then we can pop the
+     * front of the list and remove that from map
+     *
+     */
+
+    std::unordered_map<InstSeqNum, DynInstPtr> wibMap;
+    std::list<InstSeqNum> wibList;
+
     /**
      * Struct for comparing entries to be added to the priority queue.
      * This gives reverse ordering to the instructions in terms of
@@ -434,6 +445,12 @@ class InstructionQueue
 
     /** The number of physical registers in the CPU. */
     unsigned numPhysRegs;
+
+    /** The size of the WIB. */
+    unsigned wibEntries;
+
+    /** freeWIBEntries */
+    unsigned freeWIBEntries;
 
     /** Number of instructions currently in flight to FUs */
     int wbOutstanding;

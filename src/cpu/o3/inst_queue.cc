@@ -85,7 +85,7 @@ InstructionQueue::FUCompletion::description() const
 }
 
 InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
-        const BaseO3CPUParams &params)
+                                   const BaseO3CPUParams &params)
     : cpu(cpu_ptr),
       iewStage(iew_ptr),
       fuPool(params.fuPool),
@@ -93,6 +93,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       numThreads(params.numThreads),
       numEntries(params.numIQEntries),
       totalWidth(params.issueWidth),
+      wibEntries(params.numWIBEntries),
       commitToIEWDelay(params.commitToIEWDelay),
       iqStats(cpu, totalWidth),
       iqIOStats(cpu)
@@ -218,6 +219,7 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
     ADD_STAT(fuBusyRate, statistics::units::Rate<
                 statistics::units::Count, statistics::units::Count>::get(),
              "FU busy rate (busy events/executed inst)")
+// add stats here
 {
     instsAdded
         .prereq(instsAdded);
@@ -397,10 +399,15 @@ InstructionQueue::resetState()
     for (ThreadID tid = 0; tid < MaxThreads; tid++) {
         count[tid] = 0;
         instList[tid].clear();
+        wibMap.clear();
+        wibList.clear();
     }
 
     // Initialize the number of free IQ entries.
     freeEntries = numEntries;
+
+    // intitialize the free entries
+    freeWIBEntries = wibEntries;
 
     // Note that in actuality, the registers corresponding to the logical
     // registers start off as ready.  However this doesn't matter for the
@@ -577,31 +584,71 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     assert(freeEntries != 0);
 
-    instList[new_inst->threadNumber].push_back(new_inst);
+    // use add dependendts to add to dependents check if dependent
+    // if dependent add to WIB which is like the inst list
+    // increment wib entry count
+    // then we need to pull out of wib when dependent gets woken
 
-    --freeEntries;
+    if (addToDependents(new_inst))
+    {
+        // add to WIB if WIB not full
+        if (freeWIBEntries == 0) // if full get oldest and put in iq
+        {
+            // grab oldest entry and free an entry
+            InstSeqNum old_inst_num;
+            DynInstPtr old_inst;
+            old_inst_num = wibList.front(); // get oldest value on the wib
+            wibList.pop_front();            // remove the value
+            old_inst = wibMap[old_inst_num];
+            wibMap.erase(old_inst_num);
+            ++freeWIBEntries;
 
-    new_inst->setInIQ();
+            instList[old_inst->threadNumber].push_back(old_inst);
+            --freeEntries;
+            old_inst->setInIQ();
+            addIfReady(old_inst);
+
+            ++iqStats.instsAdded;
+
+            count[old_inst->threadNumber]++;
+
+            assert(freeEntries == (numEntries - countInsts()));
+        }
+        wibMap.emplace(new_inst->seqNum, new_inst);
+        wibList.push_back(new_inst->seqNum);
+        --freeWIBEntries;
+        // increment stat
+    }
+    else
+    { // not dependent so do normal adding process
+        instList[new_inst->threadNumber].push_back(new_inst);
+
+        --freeEntries;
+
+        new_inst->setInIQ();
+
+        if (new_inst->isMemRef())
+        {
+            memDepUnit[new_inst->threadNumber].insert(new_inst);
+        }
+        else
+        {
+            addIfReady(new_inst);
+        }
+
+        ++iqStats.instsAdded;
+
+        count[new_inst->threadNumber]++;
+
+        assert(freeEntries == (numEntries - countInsts()));
+    }
 
     // Look through its source registers (physical regs), and mark any
     // dependencies.
-    addToDependents(new_inst);
 
     // Have this instruction set itself as the producer of its destination
     // register(s).
     addToProducers(new_inst);
-
-    if (new_inst->isMemRef()) {
-        memDepUnit[new_inst->threadNumber].insert(new_inst);
-    } else {
-        addIfReady(new_inst);
-    }
-
-    ++iqStats.instsAdded;
-
-    count[new_inst->threadNumber]++;
-
-    assert(freeEntries == (numEntries - countInsts()));
 }
 
 void
@@ -1057,8 +1104,25 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             // graph entries would need to hold the src_reg_idx.
             dep_inst->markSrcRegReady();
 
+            // remove from wib
+            if (dep_inst->readyToIssue())
+            {
+                wibMap.erase(dep_inst->seqNum);
+                wibList.remove(dep_inst->seqNum);
+                ++freeWIBEntries;
+
+                instList[dep_inst->threadNumber].push_back(inst);
+
+                --freeEntries;
+
+                dep_inst->setInIQ();
+                ++iqStats.instsAdded;
+                ount[inst->threadNumber]++;
+                assert(freeEntries == (numEntries - countInsts()));
+            }
             addIfReady(dep_inst);
 
+            // when dependent is woken then add to all the iq structures
             dep_inst = dependGraph.pop(dest_reg->flatIndex());
 
             ++dependents;
@@ -1076,6 +1140,8 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
 }
 
 void
+// let the memDependance unit take care of everything just make sure to add
+// memory dependent insts too the WIB and then wake/remove them here
 InstructionQueue::addReadyMemInst(const DynInstPtr &ready_inst)
 {
     OpClass op_class = ready_inst->opClass();
@@ -1428,7 +1494,8 @@ void
 InstructionQueue::addIfReady(const DynInstPtr &inst)
 {
     // If the instruction now has all of its source registers
-    // available, then add it to the list of ready instructions.
+    // available, then remove from wib, add to IQ and
+    // add to list of ready instructions.
     if (inst->readyToIssue()) {
 
         //Add the instruction to the proper ready list.
@@ -1510,9 +1577,7 @@ InstructionQueue::dumpLists()
     cprintf("\n");
 }
 
-
-void
-InstructionQueue::dumpInsts()
+void InstructionQueue::dumpInsts() // not sure if I should dump WIB probably
 {
     for (ThreadID tid = 0; tid < numThreads; ++tid) {
         int num = 0;
@@ -1593,7 +1658,11 @@ InstructionQueue::dumpInsts()
         inst_list_it++;
         ++num;
     }
+
+    // Dump WIB
+    // not needed?
 }
 
 } // namespace o3
+
 } // namespace gem5
