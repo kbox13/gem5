@@ -958,7 +958,7 @@ IEW::dispatchInsts(ThreadID tid)
             // so that commit can process them when they reach the
             // head of commit.
             inst->setCanCommit();
-            instQueue.insertNonSpec(inst);
+            instQueue.insertNonSpec(inst); // check
             add_to_iq = false;
 
             ++iewStats.dispNonSpecInsts;
@@ -991,7 +991,7 @@ IEW::dispatchInsts(ThreadID tid)
                 // head of commit.
                 // @todo: This is somewhat specific to Alpha.
                 inst->setCanCommit();
-                instQueue.insertNonSpec(inst);
+                instQueue.insertNonSpec(inst); // check
                 add_to_iq = false;
 
                 ++iewStats.dispNonSpecInsts;
@@ -1003,7 +1003,7 @@ IEW::dispatchInsts(ThreadID tid)
         } else if (inst->isReadBarrier() || inst->isWriteBarrier()) {
             // Same as non-speculative stores.
             inst->setCanCommit();
-            instQueue.insertBarrier(inst);
+            instQueue.insertBarrier(inst); // check
             add_to_iq = false;
         } else if (inst->isNop()) {
             DPRINTF(IEW, "[tid:%i] Issue: Nop instruction encountered, "
@@ -1031,7 +1031,7 @@ IEW::dispatchInsts(ThreadID tid)
             inst->setCanCommit();
 
             // Specifically insert it as nonspeculative.
-            instQueue.insertNonSpec(inst);
+            instQueue.insertNonSpec(inst); // check
 
             ++iewStats.dispNonSpecInsts;
 
@@ -1041,7 +1041,7 @@ IEW::dispatchInsts(ThreadID tid)
         // If the instruction queue is not full, then add the
         // instruction.
         if (add_to_iq) {
-            instQueue.insert(inst);
+            instQueue.insert(inst); // check
         }
 
         insts_to_dispatch.pop();
