@@ -85,7 +85,7 @@ InstructionQueue::FUCompletion::description() const
 }
 
 InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
-        const BaseO3CPUParams &params)
+                                   const BaseO3CPUParams &params)
     : cpu(cpu_ptr),
       iewStage(iew_ptr),
       fuPool(params.fuPool),
@@ -93,6 +93,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       numThreads(params.numThreads),
       numEntries(params.numIQEntries),
       totalWidth(params.issueWidth),
+      wibEntries(params.numWIBEntries),
       commitToIEWDelay(params.commitToIEWDelay),
       iqStats(cpu, totalWidth),
       iqIOStats(cpu)
@@ -396,11 +397,12 @@ InstructionQueue::resetState()
     //Initialize thread IQ counts
     for (ThreadID tid = 0; tid < MaxThreads; tid++) {
         count[tid] = 0;
+        wibEntriesCount[tid] = 0;
         instList[tid].clear();
     }
 
     // Initialize the number of free IQ entries.
-    freeEntries = numEntries;
+    freeEntries = numEntries + wibEntries;
 
     // Note that in actuality, the registers corresponding to the logical
     // registers start off as ready.  However this doesn't matter for the
@@ -518,7 +520,18 @@ InstructionQueue::numFreeEntries()
 unsigned
 InstructionQueue::numFreeEntries(ThreadID tid)
 {
-    return maxEntries[tid] - count[tid];
+    return maxEntries[tid] - count[tid] + numFreeWIB();
+}
+
+unsigned
+InstructionQueue::numFreeWIB()
+{
+    unsigned total = 0;
+    for (ThreadID tid = 0; tid < MaxThreads; tid++)
+    {
+        total += wibEntriesCount[tid];
+    }
+    return wibEntries - total;
 }
 
 // Might want to do something more complex if it knows how many instructions
@@ -533,12 +546,19 @@ InstructionQueue::isFull()
     }
 }
 
+// now we check to see if the WIB is full
+// basically using the WIB as a forwarding structure
+// for all insts where the only get placed into the IQ when ready
+
 bool
 InstructionQueue::isFull(ThreadID tid)
 {
-    if (numFreeEntries(tid) == 0) {
+    if ((numFreeEntries(tid) == 0))
+    {
         return(true);
-    } else {
+    }
+    else
+    {
         return(false);
     }
 }
@@ -599,7 +619,9 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     ++iqStats.instsAdded;
 
-    count[new_inst->threadNumber]++;
+    // count[new_inst->threadNumber]++;
+    // count WIB here
+    wibEntriesCount[new_inst->threadNumber]++;
 
     assert(freeEntries == (numEntries - countInsts()));
 }
@@ -645,7 +667,9 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 
     ++iqStats.nonSpecInstsAdded;
 
-    count[new_inst->threadNumber]++;
+    // count[new_inst->threadNumber]++;
+    // count WIB here
+    wibEntriesCount[new_inst->threadNumber]++;
 
     assert(freeEntries == (numEntries - countInsts()));
 }
@@ -900,6 +924,7 @@ InstructionQueue::scheduleReadyInsts()
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
                 ++freeEntries;
+                // this is okay
                 count[tid]--;
                 issuing_inst->clearInIQ();
             } else {
@@ -1006,6 +1031,7 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
 
         ++freeEntries;
         completed_inst->memOpDone(true);
+        // this is okay
         count[tid]--;
     } else if (completed_inst->isReadBarrier() ||
                completed_inst->isWriteBarrier()) {
@@ -1081,6 +1107,10 @@ InstructionQueue::addReadyMemInst(const DynInstPtr &ready_inst)
     OpClass op_class = ready_inst->opClass();
 
     readyInsts[op_class].push(ready_inst);
+    // counting starts when in ready
+    count[ready_inst->threadNumber]++;
+    // leaves wib when ready
+    wibEntriesCount[ready_inst->threadNumber]--;
 
     // Will need to reorder the list if either a queue is not on the list,
     // or it has an older instruction than last time.
@@ -1305,7 +1335,8 @@ InstructionQueue::doSquash(ThreadID tid)
             squashed_inst->setCanCommit();
             squashed_inst->clearInIQ();
 
-            //Update Thread IQ Count
+            // Update Thread IQ Count
+            // this is okay
             count[squashed_inst->threadNumber]--;
 
             ++freeEntries;
@@ -1450,6 +1481,10 @@ InstructionQueue::addIfReady(const DynInstPtr &inst)
                 inst->pcState(), op_class, inst->seqNum);
 
         readyInsts[op_class].push(inst);
+        // counting starts when in ready
+        count[inst->threadNumber]++;
+        // leaves wib when ready
+        wibEntriesCount[inst->threadNumber]--;
 
         // Will need to reorder the list if either a queue is not on the list,
         // or it has an older instruction than last time.

@@ -172,6 +172,9 @@ class InstructionQueue
     /** Returns number of free entries for a thread. */
     unsigned numFreeEntries(ThreadID tid);
 
+    /** Returns number of free wibs for a thread. */
+    unsigned numFreeWIB();
+
     /** Returns whether or not the IQ is full. */
     bool isFull();
 
@@ -431,6 +434,12 @@ class InstructionQueue
 
     /** The total number of instructions that can be issued in one cycle. */
     unsigned totalWidth;
+
+    /** The total number of instructions that can be in the wib. */
+    unsigned wibEntries;
+
+    /** The total number of instructions in the wib. */
+    unsigned wibEntriesCount[MaxThreads];
 
     /** The number of physical registers in the CPU. */
     unsigned numPhysRegs;
