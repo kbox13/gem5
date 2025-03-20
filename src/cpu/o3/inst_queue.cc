@@ -399,11 +399,12 @@ InstructionQueue::resetState()
         count[tid] = 0;
         iq_count[tid] = 0;
         ready_buff_count[tid] = 0;
+        wib_buff_count[tid] = 0;
         instList[tid].clear();
     }
 
     // Initialize the number of free IQ entries.
-    freeEntries = numEntries;
+    freeEntries = numEntries + wib_entries; //
     wib_count = 0;
     ready_waiting = 0;
 
@@ -523,7 +524,7 @@ InstructionQueue::numFreeEntries()
 unsigned
 InstructionQueue::numFreeEntries(ThreadID tid)
 {
-    return maxEntries[tid] - (iq_count[tid] + wib_buff_count[tid]);
+    return maxEntries[tid] - count[tid];
 }
 
 // Might want to do something more complex if it knows how many instructions
@@ -584,7 +585,7 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    //--freeEntries;
+    --freeEntries;
 
     new_inst->setInIQ();
 
@@ -622,7 +623,7 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
         addIfReady(new_inst);
     }
 
-    // count[new_inst->threadNumber]++;
+    count[new_inst->threadNumber]++;
     // add here change this to being
     // added to wib if space and then track not if not space
 
@@ -654,7 +655,7 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    // --freeEntries;
+    --freeEntries;
 
     new_inst->setInIQ();
 
@@ -689,7 +690,7 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 
     ++iqStats.nonSpecInstsAdded;
 
-    // count[new_inst->threadNumber]++;
+    count[new_inst->threadNumber]++;
     // add here change this to being added
     // to wib if space and then track not if not space
 
@@ -821,6 +822,11 @@ InstructionQueue::scheduleReadyInsts()
     // This will avoid trying to schedule a certain op class if there are no
     // FUs that handle it.
     int total_issued = 0;
+    unsigned count_inserted[MaxThreads];
+    for (ThreadID tid = 0; tid < MaxThreads; tid++)
+    {
+        count_inserted[tid] = 0;
+    }
     ListOrderIt order_it = listOrder.begin();
     ListOrderIt order_end_it = listOrder.end();
 
@@ -841,7 +847,8 @@ InstructionQueue::scheduleReadyInsts()
 
         assert(issuing_inst->seqNum == (*order_it).oldestInst);
 
-        if (issuing_inst->isSquashed()) {
+        if (issuing_inst->isSquashed())
+        {
             readyInsts[op_class].pop();
 
             if (!readyInsts[op_class].empty()) {
@@ -945,23 +952,19 @@ InstructionQueue::scheduleReadyInsts()
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
-                // ++freeEntries;
+                ++freeEntries;
                 // on a clear we want to add readfy buffer insts to
                 // ready stack or decrement
                 if (ready_buff_count[tid] != 0)
                 {
-                    DynInstPtr ready_inst;
-                    ready_inst = readyInstBuffer[tid].front();
-                    readyInstBuffer[tid].pop_front();
-                    OpClass op_class = ready_inst->opClass();
-                    readyInsts[op_class].push(ready_inst);
-                    wib_count--;
+                    count_inserted[tid]++;
+                    ready_buff_count[tid]--;
                 }
                 else
                 {
                     iq_count[tid]--;
                 }
-                // count[tid]--;
+                count[tid]--;
                 // where the thread inst gets
                 // released add stuff for WIB full case
                 issuing_inst->clearInIQ();
@@ -976,6 +979,35 @@ InstructionQueue::scheduleReadyInsts()
             iqStats.statFuBusy[op_class]++;
             iqStats.fuBusy[tid]++;
             ++order_it;
+        }
+    }
+
+    // after the main scheduling loop we insert
+    // the needed instructions from the ready buffer if availible
+    for (ThreadID tid = 0; tid < MaxThreads; tid++)
+    {
+        for (int i = 0; i < count_inserted[tid]; i++)
+        {
+            DynInstPtr ready_inst;
+            ready_inst = readyInstBuffer[tid].front();
+            readyInstBuffer[tid].pop_front();
+            OpClass op_class = ready_inst->opClass();
+            readyInsts[op_class].push(ready_inst);
+            wib_count--; // check
+
+            // Will need to reorder
+            //  the list if either a queue is not on the list,
+            // or it has an older instruction than last time.
+            if (!queueOnList[op_class])
+            {
+                addToOrderList(op_class);
+            }
+            else if (readyInsts[op_class].top()->seqNum <
+                     (*readyIt[op_class]).oldestInst)
+            {
+                listOrder.erase(readyIt[op_class]);
+                addToOrderList(op_class);
+            }
         }
     }
 
@@ -1069,7 +1101,7 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         DPRINTF(IQ, "Completing mem instruction PC: %s [sn:%llu]\n",
             completed_inst->pcState(), completed_inst->seqNum);
 
-        // ++freeEntries;
+        ++freeEntries;
         completed_inst->memOpDone(true);
         if (ready_buff_count[tid] != 0)
         {
@@ -1079,12 +1111,25 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             OpClass op_class = ready_inst->opClass();
             readyInsts[op_class].push(ready_inst);
             wib_count--;
+            // Will need to reorder the
+            // list if either a queue is not on the list,
+            // or it has an older instruction than last time.
+            if (!queueOnList[op_class])
+            {
+                addToOrderList(op_class);
+            }
+            else if (readyInsts[op_class].top()->seqNum <
+                     (*readyIt[op_class]).oldestInst)
+            {
+                listOrder.erase(readyIt[op_class]);
+                addToOrderList(op_class);
+            }
         }
         else
         {
             iq_count[tid]--;
         }
-        // count[tid]--;
+        count[tid]--;
         // where the thread inst gets released add stuff for WIB full case
     } else if (completed_inst->isReadBarrier() ||
                completed_inst->isWriteBarrier()) {
@@ -1177,7 +1222,20 @@ InstructionQueue::addReadyMemInst(const DynInstPtr &ready_inst)
             wib_count++;
             wib_buff_count[tid]--;
         }
+        // Will need to reorder the list if either a queue is not on the list,
+        // or it has an older instruction than last time.
+        if (!queueOnList[op_class])
+        {
+            addToOrderList(op_class);
+        }
+        else if (readyInsts[op_class].top()->seqNum <
+                 (*readyIt[op_class]).oldestInst)
+        {
+            listOrder.erase(readyIt[op_class]);
+            addToOrderList(op_class);
+        }
     }
+
     else
     { // if the iq is full then we add the instruction to the
         // ready buffer and count nothing as it is staying
@@ -1186,18 +1244,8 @@ InstructionQueue::addReadyMemInst(const DynInstPtr &ready_inst)
         ready_buff_count[ready_inst->threadNumber]++;
     }
 
-    // Will need to reorder the list if either a queue is not on the list,
-    // or it has an older instruction than last time.
-    if (!queueOnList[op_class]) {
-        addToOrderList(op_class);
-    } else if (readyInsts[op_class].top()->seqNum  <
-               (*readyIt[op_class]).oldestInst) {
-        listOrder.erase(readyIt[op_class]);
-        addToOrderList(op_class);
-    }
-
     DPRINTF(IQ, "Instruction is ready to issue, putting it onto "
-            "the ready list, PC %s opclass:%i [sn:%llu].\n",
+                "the ready list, PC %s opclass:%i [sn:%llu].\n",
             ready_inst->pcState(), op_class, ready_inst->seqNum);
 }
 
@@ -1410,10 +1458,10 @@ InstructionQueue::doSquash(ThreadID tid)
             squashed_inst->clearInIQ();
 
             // Update Thread IQ Count
-            //  count[squashed_inst->threadNumber]--;
+            count[squashed_inst->threadNumber]--;
             // remove from WIB if squashed
             wib_count--;
-            // ++freeEntries;
+            ++freeEntries;
         }
 
         // IQ clears out the heads of the dependency graph only when
@@ -1571,6 +1619,19 @@ InstructionQueue::addIfReady(const DynInstPtr &inst)
                 wib_count++;
                 wib_buff_count[tid]--;
             }
+            // Will need to reorder the list if either a
+            // queue is not on the list,
+            // or it has an older instruction than last time.
+            if (!queueOnList[op_class])
+            {
+                addToOrderList(op_class);
+            }
+            else if (readyInsts[op_class].top()->seqNum <
+                     (*readyIt[op_class]).oldestInst)
+            {
+                listOrder.erase(readyIt[op_class]);
+                addToOrderList(op_class);
+            }
         }
         else
         { // if the iq is full then we add the instruction to the ready
@@ -1578,16 +1639,6 @@ InstructionQueue::addIfReady(const DynInstPtr &inst)
             // or the ready waiting
             readyInstBuffer[inst->threadNumber].push_back(inst);
             ready_buff_count[inst->threadNumber]++;
-        }
-
-        // Will need to reorder the list if either a queue is not on the list,
-        // or it has an older instruction than last time.
-        if (!queueOnList[op_class]) {
-            addToOrderList(op_class);
-        } else if (readyInsts[op_class].top()->seqNum  <
-                   (*readyIt[op_class]).oldestInst) {
-            listOrder.erase(readyIt[op_class]);
-            addToOrderList(op_class);
         }
     }
 }
