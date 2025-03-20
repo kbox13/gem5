@@ -356,11 +356,6 @@ class InstructionQueue
      */
     ReadyInstQueue readyInsts[Num_OpClasses];
 
-    /** List of ready instructions that arent in ready list
-     * yet each thread has own list so when a thread
-     */
-    std::list<DynInstPtr> readyInstBuffer[MaxThreads];
-
     /** List of non-speculative instructions that will be scheduled
      *  once the IQ gets a signal from commit.  While it's redundant to
      *  have the key be a part of the value (the sequence number is stored
@@ -368,8 +363,7 @@ class InstructionQueue
      *  the sequence number will be available.  Thus it is most efficient to be
      *  able to search by the sequence number alone.
      */
-    std::map<InstSeqNum, DynInstPtr>
-        nonSpecInsts;
+    std::map<InstSeqNum, DynInstPtr> nonSpecInsts;
 
     typedef std::map<InstSeqNum, DynInstPtr>::iterator NonSpecMapIt;
 
@@ -440,31 +434,6 @@ class InstructionQueue
 
     /** The number of physical registers in the CPU. */
     unsigned numPhysRegs;
-
-    /** The size of the waiting instruction buffer
-     */
-    unsigned wib_entries;
-
-    /** The number of insts in the WIB
-     */
-    unsigned wib_count;
-
-    /** The number of insts that never needed
-     * to go to the wib in the case that the wib is full
-     */
-    unsigned ready_waiting;
-
-    /** The number of insts that are in the IQ that can go to the WIB
-     */
-    unsigned wib_buff_count[MaxThreads];
-
-    /** The number of insts in the IQ
-     */
-    unsigned iq_count[MaxThreads];
-
-    /** The number of insts that are ready but dont fit back into the IQ
-     */
-    unsigned ready_buff_count[MaxThreads];
 
     /** Number of instructions currently in flight to FUs */
     int wbOutstanding;
